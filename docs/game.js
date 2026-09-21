@@ -1,10 +1,12 @@
-import {RULES,distanceForPower,powerForDistance,seededRandom,nextPlatform,platformX,landingResult,checkpoint,nextCheckpoint} from './game-core.mjs';
+import {RULES,distanceForPower,powerForDistance,seededRandom,nextPlatform,platformX,landingResult,checkpoint,nextCheckpoint,checkpointRange} from './game-core.mjs';
 
 // 参数区：浏览器存储键与游戏呈现参数集中定义。无外部请求、文件或密钥。
 const CONFIG={storageKey:'one-more-hop.best.v1',medalStorageKey:'one-more-hop.medals.v1',ballRadius:15,flightSeconds:.58,particleLimit:100};
 const $=id=>document.getElementById(id),canvas=$('canvas'),ctx=canvas.getContext('2d');
 const TICKET_PERFECTS=2;
 const HEROES=[{id:'paper',name:'纸飞机',need:0,bonus:'标准跳跃'},{id:'guard',name:'护航员',need:3,bonus:'开局护航券 ×1'},{id:'ace',name:'靶心手',need:7,bonus:'精准奖励翻倍'}];
+const ANOMALIES={calm:{id:'calm',name:'平稳航路',desc:'没有额外规则'},wind:{id:'wind',name:'侧风带',desc:'每次起跳会被横向推移 18 格'},needle:{id:'needle',name:'窄门',desc:'精准区域缩小一半'},blackout:{id:'blackout',name:'禁援区',desc:'护航券在本航段无法生效'}};
+const anomalyForSegment=segment=>segment%6===2?ANOMALIES.wind:segment%6===4?ANOMALIES.needle:segment%6===0?ANOMALIES.blackout:ANOMALIES.calm;
 const ticketProgress=(progress,perfect,tickets)=>{const next=perfect?progress+1:progress;if(tickets>0||next<TICKET_PERFECTS)return {progress:next,tickets,earned:false};return {progress:0,tickets:1,earned:true}};
 const badgeTitle=count=>count>=9?'月球领航员':count>=5?'小火箭驾驶员':count>=3?'纸飞机收集家':'起跳练习生';
 function rewardNode(id,className,text,parent){let node=document.getElementById(id);if(node)return node;node=document.createElement('small');node.id=id;node.className=className;node.textContent=text;parent?.append(node);return node;}
@@ -17,7 +19,13 @@ try{heroId=localStorage.getItem('one-more-hop.hero.v1')||heroId}catch{}
 $('best').textContent=best;
 rewardUi.medals.textContent=medals;rewardUi.title.textContent=badgeTitle(medals);
 function hero(){return HEROES.find(item=>item.id===heroId&&medals>=item.need)||HEROES[0]}
-function renderHeroes(){let box=$('heroes');if(!box){box=document.createElement('div');box.id='heroes';box.style.cssText='display:flex;gap:6px;flex-wrap:wrap;margin:10px 0';$('hold').parentElement.prepend(box)}box.replaceChildren(...HEROES.map(item=>{const b=document.createElement('button'),ok=medals>=item.need;b.textContent=ok?`${item.name} · ${item.bonus}`:`${item.name} · ${item.need} 徽章解锁`;b.disabled=!ok;b.className=item.id===hero().id?'main':'';b.onclick=()=>{heroId=item.id;try{localStorage.setItem('one-more-hop.hero.v1',heroId)}catch{}renderHeroes();reset()};return b}))}
+function renderHeroes(){
+ let box=$('heroes');if(!box){box=document.createElement('section');box.id='heroes';$('hold').parentElement.prepend(box)}box.className='craft-picker';
+ const copy=document.createElement('div');copy.className='craft-copy';copy.innerHTML=`<b>起飞机体</b><small>每抵达一个安全站获得 1 枚徽章 · 当前 ${medals} 枚</small>`;
+ const options=document.createElement('div');options.id='hero-options';options.className='craft-options';
+ for(const item of HEROES){const b=document.createElement('button'),ok=medals>=item.need,missing=Math.max(0,item.need-medals);b.heroKey=item.id;b.innerHTML=ok?`<b>${item.name}</b><small>${item.bonus}</small><em>${item.id===hero().id?'使用中':'可选择'}</em>`:`<b>${item.name}</b><small>${item.bonus}</small><em>再抵达 ${missing} 个安全站</em>`;b.disabled=!ok;b.className=item.id===hero().id?'selected':'';b.onclick=()=>{if(game&&game.step>0&&!['lost','banked'].includes(game.phase)){message('本局已经起飞。','机体只能在开局或结算后更换。');return}heroId=item.id;try{localStorage.setItem('one-more-hop.hero.v1',heroId)}catch{}renderHeroes();reset()};options.append(b)}box.replaceChildren(copy,options);updateHeroAvailability();
+}
+function updateHeroAvailability(){const options=$('hero-options');if(!options)return;const running=game&&game.step>0&&!['lost','banked'].includes(game.phase);for(const button of options.children){const item=HEROES.find(hero=>hero.id===button.heroKey);button.disabled=running||!item||medals<item.need}}
 function resize(){const rect=canvas.getBoundingClientRect();dpr=Math.min(devicePixelRatio||1,2);W=Math.max(560,rect.width);H=rect.height*W/rect.width;baseY=H*.64;canvas.width=Math.round(rect.width*dpr);canvas.height=Math.round(rect.height*dpr);ctx.setTransform(canvas.width/W,0,0,canvas.height/H,0,0);}
 new ResizeObserver(resize).observe(canvas);
 function ping(frequency=440,duration=.09,delay=0,type='sine'){
@@ -25,22 +33,25 @@ function ping(frequency=440,duration=.09,delay=0,type='sine'){
 }
 function message(main,sub=''){ $('feedbackmain').textContent=main;$('feedbacksub').textContent=sub;}
 function updateHud(){
- $('score').textContent=game.score;$('level').textContent=`第 ${game.step} 跳`;
- const progress=game.step%3||((game.phase==='checkpoint'||game.phase==='banked')?3:0);
+ $('score').textContent=game.score;$('coins').textContent=game.coins;$('level').textContent=`第 ${game.step} 跳`;
+ const stopped=['checkpoint','banked'].includes(game.phase),range=checkpointRange(stopped?Math.max(0,game.step-1):game.step),progress=stopped?range.length:range.progress;
+ if($('station').children.length!==range.length)$('station').replaceChildren(...Array.from({length:range.length},()=>document.createElement('i')));
  [...$('station').children].forEach((dot,i)=>dot.classList.toggle('on',i<progress));
  $('nextsafe').textContent=game.phase==='checkpoint'?'安全站已到达':`再跳 ${nextCheckpoint(game.step)-game.step} 次到安全站`;
+ $('route').textContent=`航段 ${game.segment} · ${game.anomaly.name}`;$('route').classList.toggle('danger',game.anomaly.id!=='calm');
  $('combo').textContent=game.combo?`精准连击 ×${game.combo} · 下次精准 +${20*Math.min(game.combo+1,5)}`:'踩中中心，奖励翻倍';
  rewardUi.mission.textContent=game.tickets?`护航券已就绪 · 本段继续精准可加分`:`精准落地 ${game.missionProgress}/${TICKET_PERFECTS} · 赢一张护航券`;
  rewardUi.ticket.textContent=`护航券 ×${game.tickets}`;
  $('scorehint').textContent=game.phase==='banked'?'已收入本局纪录':game.phase==='lost'?'失足清零 · 历史纪录保留':'到安全站才能带走';
  $('hold').disabled=!['ready','charging'].includes(game.phase);
  const zone=$('chargezone');zone.classList.toggle('hidden',game.step>=3||!['ready','charging'].includes(game.phase));
- const target=game.platforms[game.step+1];if(target){const start=powerForDistance(platformX(target,game.time)-game.ballX-target.width/2+4),end=powerForDistance(platformX(target,game.time)-game.ballX+target.width/2-4);zone.style.left=`${start*100}%`;zone.style.width=`${(end-start)*100}%`;}
+ const target=game.platforms[game.step+1];if(target){const width=effectiveWidth(target),drift=game.anomaly.id==='wind'?windDrift():0,start=powerForDistance(platformX(target,game.time)-game.ballX-width/2+4-drift),end=powerForDistance(platformX(target,game.time)-game.ballX+width/2-4-drift);zone.style.left=`${start*100}%`;zone.style.width=`${(end-start)*100}%`;}
+ renderLoadout();updateHeroAvailability();if(document.body)document.body.className=game.anomaly.id==='calm'?'':`anomaly-${game.anomaly.id}`;
 }
 function clearCharge(){input=null;game.power=0;$('hold').classList.remove('charging');$('chargefill').style.width='0%';$('power').textContent='0%';}
 function reset(){
  const rng=seededRandom(Math.floor(Math.random()*4294967296));const start={x:180,width:128,index:0,moving:false,phase:0};
- game={phase:'ready',time:0,score:0,step:0,combo:0,power:0,tickets:hero().id==='guard'?1:0,missionProgress:0,multiplier:1,perfectBonus:0,safeVisits:0,shopRerolls:0,shop:[],owned:{},pool:CARDS.map(card=>[22,20,17,10,9][card.t]),platforms:[start],ballX:start.x,ballY:0,offset:0,camera:start.x-W*.25,rng,flight:null,squash:0,fall:0,shake:0,lostScore:0};
+ game={phase:'ready',time:0,score:0,coins:2,step:0,combo:0,power:0,tickets:hero().id==='guard'?1:0,missionProgress:0,safeVisits:0,segment:1,anomaly:anomalyForSegment(1),segmentPerfects:0,segmentRescued:false,shopRerolls:0,shop:[],loadout:[],platforms:[start],ballX:start.x,ballY:0,offset:0,camera:start.x-W*.25,rng,flight:null,squash:0,fall:0,shake:0,lostScore:0,lastCoinGain:0};
  for(let i=1;i<=3;i++)game.platforms.push(nextPlatform(game.platforms.at(-1),i,rng));
  particles=[];rings=[];trail=[];pausedFrom=null;clearCharge();hideOverlay();message('第一跳，找找手感。','亮色区域是落点辅助 · 前 3 跳有效');updateHud();
 }
@@ -51,30 +62,64 @@ function startCharge(kind,id){
 }
 function releaseCharge(){
  if(game.phase!=='charging'||!input)return;
- const p=Math.min(1,(performance.now()-input.started)/RULES.chargeMs),distance=distanceForPower(p);game.phase='jumping';
- game.flight={start:game.ballX,end:game.ballX+distance,elapsed:0,duration:CONFIG.flightSeconds+.12*p,height:95+70*p};game.ballY=0;
+ const p=Math.min(1,(performance.now()-input.started)/RULES.chargeMs),distance=distanceForPower(p),drift=game.anomaly.id==='wind'?windDrift():0;game.phase='jumping';
+ game.flight={start:game.ballX,end:game.ballX+distance+drift,elapsed:0,duration:CONFIG.flightSeconds+.12*p,height:95+70*p,power:p,distance,drift};game.ballY=0;
  clearCharge();$('chargelabel').textContent='飞行中…';ping(270+p*200,.1);updateHud();
 }
 function cancelCharge(){if(game.phase==='charging'){clearCharge();game.phase='ready';$('chargelabel').textContent='按住蓄力 · 松开起跳';updateHud();}}
 function burst(x,y,color,count){if(reduced)return;for(let i=0;i<count&&particles.length<CONFIG.particleLimit;i++)particles.push({x,y,vx:(Math.random()-.5)*170,vy:-Math.random()*150-25,life:1,color,size:2+Math.random()*3});}
-function land(){
- const target=game.platforms[game.step+1],result=landingResult(game.ballX,target,game.time,game.combo);
- if(!result.safe){
-  if(game.tickets>0){game.tickets--;game.step++;game.combo=0;game.offset=0;game.ballY=0;game.squash=1;game.phase='ready';game.flight=null;burst(game.ballX,baseY-15,'#e5fc72',30);rings.push({x:game.ballX,y:baseY,life:1,color:'#e5fc72'});message('护航券救了这一跳！','没有得分，但本局没有结束。');ping(660,.12);while(game.platforms.length<game.step+4){const index=game.platforms.length;game.platforms.push(nextPlatform(game.platforms.at(-1),index,game.rng));}if(checkpoint(game.step)){game.safeVisits++;game.phase='checkpoint';showCheckpoint()}updateHud();return;
-  }
-  game.phase='falling';game.fall=0;game.lostScore=game.score;message(result.error>0?'贪远了一点。':'就差那么一点。',`距平台边缘还差 ${Math.ceil(Math.abs(result.error)-target.width/2+4)} 格`);ping(145,.18,0,'triangle');return;
+function ownedCard(id){return game.loadout.find(card=>card.id===id)}
+function cardLevel(id){return ownedCard(id)?.level||0}
+function effectiveWidth(platform){return platform.width+cardLevel('steady')*7}
+function perfectRadiusFor(platform){let radius=Math.min(RULES.perfectRadius,effectiveWidth(platform)*.16);if(cardLevel('needle'))radius*=Math.max(.55,1-cardLevel('needle')*.15);if(game.anomaly.id==='needle')radius*=.5;return radius}
+function windDrift(){return game.segment%2?18:-18}
+function scoreLanding(result,target,flight){
+ let add=result.points+Math.max(0,Math.round((flight.distance-160)/45)),mult=hero().id==='ace'&&result.perfect?2:1,coins=0;
+ const edge=result.safe&&Math.abs(result.error)>=effectiveWidth(target)*.30,full=flight.power>=.82,triggers=[];
+ for(const state of game.loadout){
+  const level=state.level;let hit=false;
+  if(state.id==='steady'&&Math.abs(result.error)>target.width/2-4){add+=5*level;hit=true}
+  else if(state.id==='focus'&&result.perfect){add+=8*level;hit=true}
+  else if(state.id==='edge_coin'&&edge){coins+=level;hit=true}
+  else if(state.id==='full_charge'&&full){add+=12*level;hit=true}
+  else if(state.id==='combo_engine'&&result.perfect&&result.combo>1){mult+=.12*result.combo*level;hit=true}
+  else if(state.id==='needle'&&result.perfect){mult*=1.35+.2*level;hit=true}
+  else if(state.id==='long_engine'&&full){mult*=1.25+.2*level;hit=true}
+  else if(state.id==='cliff'&&edge){mult*=1.35+.2*level;hit=true}
+  else if(state.id==='storm'&&target.moving){mult*=1.6+.2*level;hit=true}
+  else if(state.id==='glass'){mult*=1.45+.15*level;hit=true}
+  else if(state.id==='gold_echo'&&result.perfect&&result.combo>=3){mult*=1.7+.3*level;hit=true}
+  else if(state.id==='mint'&&result.perfect&&result.combo%3===0){coins+=level;hit=true}
+  else if(state.id==='anomaly'&&game.anomaly.id!=='calm'){mult*=1.6+.25*level;hit=true}
+  if(hit)triggers.push(state.id)
  }
- game.step++;game.combo=result.combo;const reward=(result.points+(result.perfect?game.perfectBonus:0))*game.multiplier;game.score+=reward;game.offset=result.error;game.ballY=0;game.squash=1;game.phase='ready';game.flight=null;
+ return {reward:Math.max(1,Math.round(add*mult)),add,mult,coins,edge,full,triggers};
+}
+function pulseTriggers(ids){if(!ids.length)return;renderLoadout();for(const node of $('loadout').children)if(ids.includes(node.cardId))node.classList.add('triggered');if(typeof setTimeout==='function')setTimeout(()=>renderLoadout(),650)}
+function arriveCheckpoint(){const before=medals,lifeline=cardLevel('lifeline');if(!game.tickets&&lifeline&&game.segmentPerfects>=Math.max(1,3-lifeline))game.tickets=1;game.safeVisits++;medals++;try{localStorage.setItem(CONFIG.medalStorageKey,String(medals))}catch{}rewardUi.medals.textContent=medals;rewardUi.title.textContent=badgeTitle(medals);const unlocked=HEROES.filter(item=>item.need>before&&item.need<=medals);game.lastUnlock=unlocked.map(item=>item.name).join('、');renderHeroes();game.shopRerolls=0;game.shop=[];const interest=Math.min(3,Math.floor(game.coins/5)+cardLevel('interest')),clean=game.segmentRescued?0:2,perfect=Math.min(3,game.segmentPerfects),routeBonus=cardLevel('route_mint')*2;game.lastCoinGain=4+clean+perfect+interest+routeBonus;game.coins+=game.lastCoinGain;game.phase='checkpoint';showCheckpoint()}
+function land(){
+ const target=game.platforms[game.step+1],judged={...target,width:effectiveWidth(target)},result=landingResult(game.ballX,judged,game.time,game.combo);
+ if(result.safe){result.perfect=Math.abs(result.error)<=perfectRadiusFor(target);result.combo=result.perfect?game.combo+1:0;result.points=result.perfect?20*Math.min(result.combo,5):10}
+ if(!result.safe){
+  const rescueBlocked=game.anomaly.id==='blackout'||cardLevel('glass')>0;
+  if(game.tickets>0&&!rescueBlocked){game.tickets--;game.step++;game.combo=0;game.segmentRescued=true;game.offset=0;game.ballY=0;game.squash=1;game.phase='ready';game.flight=null;burst(game.ballX,baseY-15,'#e5fc72',30);rings.push({x:game.ballX,y:baseY,life:1,color:'#e5fc72'});message('护航券救了这一跳！','本航段失去无伤航币，但航程继续。');ping(660,.12);while(game.platforms.length<game.step+4){const index=game.platforms.length;game.platforms.push(nextPlatform(game.platforms.at(-1),index,game.rng));}if(checkpoint(game.step))arriveCheckpoint();updateHud();return;
+  }
+  game.phase='falling';game.fall=0;game.lostScore=game.score;message(rescueBlocked&&game.tickets?'禁援规则生效。':result.error>0?'贪远了一点。':'就差那么一点。',`距平台边缘还差 ${Math.ceil(Math.abs(result.error)-effectiveWidth(target)/2+4)} 格`);ping(145,.18,0,'triangle');return;
+ }
+ const flight=game.flight,scored=scoreLanding(result,target,flight);game.step++;game.combo=result.combo;game.segmentPerfects+=result.perfect?1:0;game.score+=scored.reward;game.coins+=scored.coins;game.offset=result.error;game.ballY=0;game.squash=1;game.phase='ready';game.flight=null;
  const mission=ticketProgress(game.missionProgress,result.perfect,game.tickets);game.missionProgress=mission.progress;game.tickets=mission.tickets;
  const color=result.perfect?'#e5fc72':'#a5a0ff';burst(game.ballX,baseY-15,color,result.perfect?25:10);rings.push({x:game.ballX,y:baseY,life:1,color});game.shake=result.perfect&&!reduced?3:0;
- if(result.perfect){message(mission.earned?'护航券到手！':game.combo>1?`精准连击 ×${game.combo}`:'正中靶心！',mission.earned?'下一次失误会救回本局。':`+${reward} · 再稳一点，还能翻倍`);ping(520+Math.min(game.combo,5)*90,.12);ping(780+Math.min(game.combo,5)*90,.1,.07)}else{message(`稳稳落地 +${reward}`,game.step===3?'落点辅助结束。接下来凭手感。':game.step<3?'松手时，让虚线落在平台中间':'下一跳，往中心试试。');ping(390,.08)}
+ const triggerNames=scored.triggers.map(id=>cardById(id).n).join(' · '),formula=scored.mult>1.01?`${scored.add} × ${scored.mult.toFixed(2)} = ${scored.reward}`:`本跳 +${scored.reward}`;
+ if(result.perfect){message(mission.earned?'护航券到手！':game.combo>1?`精准连击 ×${game.combo}`:'正中靶心！',`${formula}${scored.coins?` · 航币 +${scored.coins}`:''}${triggerNames?` · ${triggerNames}`:''}`);ping(520+Math.min(game.combo,5)*90,.12);ping(780+Math.min(game.combo,5)*90,.1,.07)}else{message(scored.edge?`擦边落地 +${scored.reward}`:`稳稳落地 +${scored.reward}`,`${formula}${scored.coins?` · 航币 +${scored.coins}`:''}${triggerNames?` · ${triggerNames}`:''}`);ping(390,.08)}
+ pulseTriggers(scored.triggers);
  while(game.platforms.length<game.step+4){const index=game.platforms.length;game.platforms.push(nextPlatform(game.platforms.at(-1),index,game.rng));}
  $('chargelabel').textContent='按住蓄力 · 松开起跳';
- if(checkpoint(game.step)){game.safeVisits++;game.phase='checkpoint';showCheckpoint()}
+ if(checkpoint(game.step))arriveCheckpoint();
  updateHud();
 }
 function showOverlay(label,title,score,desc,buttons,note){
  $('resultbuttons').parentElement?.classList.remove('shop-mode');
+ $('shoploadout').classList.add('hidden');
  $('resultlabel').textContent=label;$('resulttitle').textContent=title;$('resultscore').textContent=score;$('resultdesc').textContent=desc;$('resultnote').textContent=note;
  $('resultbuttons').replaceChildren();for(const item of buttons){const button=document.createElement('button');button.textContent=item.text;button.className=item.main?'main':'';button.onclick=item.action;$('resultbuttons').append(button)}
  $('overlay').classList.remove('hidden');$('feedback').classList.add('hidden');$('resultbuttons').firstElementChild?.focus({preventScroll:true});
@@ -82,22 +127,45 @@ function showOverlay(label,title,score,desc,buttons,note){
 function hideOverlay(){$('overlay').classList.add('hidden');$('feedback').classList.remove('hidden');}
 const TIERS=[{name:'白',icon:'⚪',color:'#d8dce8'},{name:'绿',icon:'🟢',color:'#8ee68d'},{name:'蓝',icon:'🔵',color:'#8cb7ff'},{name:'紫',icon:'🟣',color:'#d29bff'},{name:'金',icon:'🟡',color:'#ffe271'}];
 const CARDS=[
- {t:0,n:'稳步前行',d:'立刻 +15 分',a:()=>game.score+=15},{t:0,n:'应急绳',d:'护航券 +1',a:()=>game.tickets++},{t:0,n:'专注呼吸',d:'精准额外 +8 分',a:()=>game.perfectBonus+=8},
- {t:1,n:'顺风',d:'得分倍率 +0.5',a:()=>game.multiplier+=.5},{t:1,n:'双保险',d:'护航券 +2',a:()=>game.tickets+=2},{t:1,n:'热手',d:'精准额外 +18 分',a:()=>game.perfectBonus+=18},
- {t:2,n:'连胜引擎',d:'得分倍率 +1',a:()=>game.multiplier+=1},{t:2,n:'空投补给',d:'立刻 +55 分',a:()=>game.score+=55},{t:2,n:'完美主义',d:'精准额外 +35 分',a:()=>game.perfectBonus+=35},
- {t:3,n:'高空风暴',d:'得分倍率 ×1.8',a:()=>game.multiplier*=1.8},{t:3,n:'救援编队',d:'护航券 +3',a:()=>game.tickets+=3},{t:3,n:'赏金轨迹',d:'立刻 +130 分',a:()=>game.score+=130},
- {t:4,n:'黄金航线',d:'得分倍率 ×3',a:()=>game.multiplier*=3},{t:4,n:'不坠之翼',d:'护航券 +5',a:()=>game.tickets+=5},{t:4,n:'星辰契约',d:'精准额外 +100 分',a:()=>game.perfectBonus+=100}
+ {id:'steady',t:0,n:'稳压翼',tag:'容错',price:4,d:l=>`平台有效宽度 +${7*l} 格`},
+ {id:'focus',t:0,n:'焦点镜',tag:'精准',price:4,d:l=>`精准时飞行值 +${8*l}`},
+ {id:'edge_coin',t:0,n:'擦边奖券',tag:'擦边',price:4,d:l=>`擦边落地获得 ${l} 航币`},
+ {id:'full_charge',t:1,n:'满弦',tag:'远航',price:5,d:l=>`蓄力 ≥82% 时飞行值 +${12*l}`},
+ {id:'combo_engine',t:1,n:'连击仪',tag:'精准',price:5,d:l=>`精准连击每层倍率 +${Math.round(12*l)}%`},
+ {id:'lifeline',t:1,n:'备用索',tag:'救援',price:5,d:l=>`每段完成 ${Math.max(1,3-l)} 次精准且无券时补 1 张`},
+ {id:'needle',t:2,n:'针尖航线',tag:'精准·风险',price:7,d:l=>`精准区缩小，精准倍率 ×${(1.35+.2*l).toFixed(2)}`},
+ {id:'long_engine',t:2,n:'远航引擎',tag:'远航',price:7,d:l=>`蓄力 ≥82% 时倍率 ×${(1.25+.2*l).toFixed(2)}`},
+ {id:'cliff',t:2,n:'悬崖舞者',tag:'擦边',price:7,d:l=>`擦边落地倍率 ×${(1.35+.2*l).toFixed(2)}`},
+ {id:'route_mint',t:2,n:'航路税印',tag:'经济',price:7,d:l=>`每到安全站额外获得 ${2*l} 航币`},
+ {id:'storm',t:3,n:'风暴猎手',tag:'移动平台',price:9,d:l=>`落在移动平台时倍率 ×${(1.6+.2*l).toFixed(2)}`},
+ {id:'glass',t:3,n:'玻璃机翼',tag:'高风险',price:9,d:l=>`所有得分 ×${(1.45+.15*l).toFixed(2)}，护航券失效`},
+ {id:'interest',t:3,n:'复利导航',tag:'经济',price:9,d:l=>`每站利息额外 +${l} 航币`},
+ {id:'gold_echo',t:4,n:'黄金回声',tag:'精准',price:12,d:l=>`精准连击 ≥3 时倍率 ×${(1.7+.3*l).toFixed(2)}`},
+ {id:'mint',t:4,n:'航币铸机',tag:'经济',price:12,d:l=>`每第 3 次精准获得 ${l} 航币`},
+ {id:'anomaly',t:4,n:'逆风奇迹',tag:'异常航路',price:12,d:l=>`异常航路中倍率 ×${(1.6+.25*l).toFixed(2)}`}
 ];
-function odds(){const s=game.score;return s<80?[58,29,10,3,0]:s<180?[40,34,19,6,1]:s<360?[24,35,27,11,3]:s<600?[10,29,35,19,7]:[3,16,34,31,16]}
-function drawCard(){const weights=odds();for(let attempts=0;attempts<30;attempts++){const roll=game.rng()*100;let sum=0,tier=0;for(;tier<weights.length;tier++){sum+=weights[tier];if(roll<sum)break}const choices=CARDS.map((card,index)=>({card,index})).filter(item=>item.card.t===tier&&game.pool[item.index]>0);if(choices.length){const pick=choices[Math.floor(game.rng()*choices.length)];game.pool[pick.index]--;return {...pick.card,index:pick.index}}}const index=game.pool.findIndex(count=>count>0);if(index<0)return null;game.pool[index]--;return {...CARDS[index],index}}
-function returnShop(keep=-1){game.shop.forEach((card,index)=>{if(card&&index!==keep)game.pool[card.index]++});game.shop=[]}
-function fillShop(){game.shop=Array.from({length:5},drawCard).filter(Boolean)}
-function takeCard(card,slot){const count=(game.owned[card.index]||0)+1;game.owned[card.index]=count;returnShop(slot);card.a();const upgraded=count%3===0;if(upgraded)card.a();message(upgraded?`${card.n} 升到 ${Math.floor(count/3)+1} 星！`:`获得：${card.n}`,upgraded?'集齐三张，本次效果额外触发一次。':card.d);continueRun()}
-function showUpgrades(){if(!game.shop.length)fillShop();const picks=game.shop,cost=20+game.shopRerolls*15,buttons=picks.map((card,slot)=>({text:card.n,action:()=>takeCard(card,slot)}));buttons.push({text:`刷新牌店 · ${cost} 分`,action:()=>{if(game.score<cost){message('分数不够刷新。','可以直接选一张继续。');return}game.score-=cost;game.shopRerolls++;returnShop();fillShop();showUpgrades()}});showOverlay('THE SKY SHOP / 云端牌店','航路牌店 · 五选一',`${game.score} 分`, `牌池概率 ${odds().join(' / ')}%`,buttons,`刷新 ${cost} 分 · 买走会减少库存 · 三张同名自动升级`);const cardButtons=[...$('resultbuttons').children];cardButtons.forEach((button,index)=>{if(index===picks.length){button.innerHTML=`刷新五张　<b>${cost} 分</b>`;button.className='shop-refresh';return}const card=picks[index],owned=game.owned[card.index]||0;button.innerHTML=`<span class="shop-art art-${card.t}"></span><b>${card.n}</b><small>${card.d}</small><span class="owned">持有 ${owned}/3 · 余 ${game.pool[card.index]}</span><em>${card.t+1}</em>`;button.className=`shop-card tier-${card.t}`;button.setAttribute('aria-label',`${card.n}，${card.d}`)});$('resultbuttons').parentElement?.classList.add('shop-mode');}
-function showCheckpoint(){showOverlay('SAFE POINT / 安全站','见好就收？',game.score,`已经连过 ${game.step} 跳。\n下一安全站在第 ${nextCheckpoint(game.step)} 跳，距离更远。`,[{text:`收手，带走 ${game.score} 分`,main:true,action:bank},{text:'加注，选一项能力 →',action:showUpgrades}],'B 收手 · 选能力后继续 · 没有倒计时，慢慢决定');}
-function continueRun(){if(game.phase!=='checkpoint')return;game.missionProgress=0;hideOverlay();game.phase='ready';message('好，再来一跳。',game.step===3?'从这一跳起，不再显示落点辅助':'分数还没落袋，稳住。');updateHud();canvas.focus({preventScroll:true});}
-function bank(){if(game.phase!=='checkpoint')return;game.phase='banked';const newRecord=game.score>best;best=Math.max(best,game.score);const gained=game.safeVisits;medals+=gained;let saved=true;try{localStorage.setItem(CONFIG.storageKey,String(best));localStorage.setItem(CONFIG.medalStorageKey,String(medals))}catch{saved=false}$('best').textContent=best;rewardUi.medals.textContent=medals;rewardUi.title.textContent=badgeTitle(medals);renderHeroes();ping(523,.13);ping(659,.13,.12);ping(784,.18,.24);burst(game.ballX,baseY-60,'#e5fc72',45);showOverlay(newRecord?'NEW BEST / 新纪录':'NICELY DONE / 稳稳收下','这次，收得漂亮。',`+${game.score}`,`走过 ${game.step} 座平台，收下 ${gained} 枚安全徽章。`,[{text:'再来一局 ↗',main:true,action:reset}],saved?`R 立即重开 · ${badgeTitle(medals)} · 徽章已保存在本机`:'当前浏览器无法保存纪录；本次页面仍保留');updateHud();}
-function lose(){game.phase='lost';const lostScore=game.lostScore;game.score=0;const desc=game.step?`过了 ${game.step} 跳，${lostScore} 分没能带走。\n历史最高 ${best} 分，还在。`:'第一跳没站稳。\n按住约半秒，再松手试试。';showOverlay('SO CLOSE / 差一点','再来一次？',0,desc,[{text:'再来一局 ↗',main:true,action:reset}],'R 立即重开 · 不用等，不用看广告');updateHud();}
+function cardById(id){return CARDS.find(card=>card.id===id)}
+function odds(){const s=game.safeVisits+1;return s<2?[62,29,8,1,0]:s<4?[42,34,18,5,1]:s<6?[25,34,27,11,3]:[12,27,32,22,7]}
+function cardPrice(card){const owned=ownedCard(card.id);return card.price+(owned?.level||0)}
+function drawCard(excluded=[]){const weights=odds(),available=CARDS.filter(card=>!excluded.includes(card.id)&&cardLevel(card.id)<3);for(let attempts=0;attempts<40;attempts++){const roll=game.rng()*100;let sum=0,tier=0;for(;tier<weights.length;tier++){sum+=weights[tier];if(roll<sum)break}const choices=available.filter(card=>card.t===tier);if(choices.length)return choices[Math.floor(game.rng()*choices.length)]}return available[Math.floor(game.rng()*available.length)]}
+function fillShop(){game.shop=[];while(game.shop.length<5){const card=drawCard(game.shop.map(item=>item.id));if(!card)break;game.shop.push(card)}}
+function renderLoadout(root=$('loadout'),sellMode=false){
+ const nodes=game.loadout.map(state=>{const def=cardById(state.id),node=document.createElement(sellMode?'button':'div'),refund=Math.max(1,Math.ceil(def.price*.55*state.level));node.className=`loadout-card tier-${def.t}`;node.cardId=state.id;node.innerHTML=`<b>${def.n}</b><small>${def.tag} · ${state.copies}/3</small><em>${'★'.repeat(state.level)}</em>${sellMode?`<span>卖 ${refund}</span>`:''}`;if(sellMode)node.onclick=()=>sellCard(state.id);return node});
+ if(!sellMode)while(nodes.length<5){const empty=document.createElement('div');empty.className='loadout-empty';empty.textContent='+';nodes.push(empty)}
+ if(sellMode&&!nodes.length){const empty=document.createElement('span');empty.textContent='暂无航标';nodes.push(empty)}root.replaceChildren(...nodes);
+}
+function sellCard(id){const index=game.loadout.findIndex(card=>card.id===id);if(index<0)return;const state=game.loadout[index],def=cardById(id),refund=Math.max(1,Math.ceil(def.price*.55*state.level));game.loadout.splice(index,1);game.coins+=refund;renderLoadout();renderLoadout($('shoploadout'),true);$('resultscore').textContent=`${game.coins} 航币`;$('resultnote').textContent=`已出售 ${def.n}，返还 ${refund} 航币。`}
+function takeCard(card){const price=cardPrice(card),owned=ownedCard(card.id);if(game.coins<price){$('resultnote').textContent=`还差 ${price-game.coins} 航币。可以出售旧牌或跳过。`;return}if(!owned&&game.loadout.length>=5){$('resultnote').textContent='航标槽已满。先点击上方已装备航标出售一张。';return}game.coins-=price;let state=owned,upgraded=false;if(!state){state={id:card.id,level:1,copies:1};game.loadout.push(state)}else{state.copies++;if(state.copies>=3&&state.level<3){state.level++;state.copies=0;upgraded=true}}message(upgraded?`${card.n} 升到 ${state.level} 星！`:`装上：${card.n}`,card.d(state.level));continueRun()}
+function refreshShop(){const cost=3+game.shopRerolls;if(game.coins<cost){$('resultnote').textContent=`刷新需要 ${cost} 航币，目前只有 ${game.coins}。`;return}game.coins-=cost;game.shopRerolls++;fillShop();showUpgrades()}
+function showUpgrades(){
+ if(!game.shop.length)fillShop();const picks=game.shop,cost=3+game.shopRerolls,buttons=picks.map(card=>({text:card.n,action:()=>takeCard(card)}));buttons.push({text:`刷新 · ${cost} 航币`,action:refreshShop},{text:'跳过商店，继续',action:continueRun});
+ showOverlay('THE SKY SHOP / 云端牌店','为下一段选一张航标',`${game.coins} 航币`,`下一航段：${anomalyForSegment(game.safeVisits+1).name} · ${anomalyForSegment(game.safeVisits+1).desc}`,buttons,`稀有度 ${odds().join(' / ')}% · 刷新逐次涨价，每站复位 · 同名三张升星`);
+ $('shoploadout').classList.remove('hidden');renderLoadout($('shoploadout'),true);const cardButtons=[...$('resultbuttons').children];cardButtons.forEach((button,index)=>{if(index===picks.length){button.innerHTML=`刷新五张　<b>${cost} 航币</b>`;button.className='shop-refresh';return}if(index===picks.length+1){button.className='shop-skip';return}const card=picks[index],owned=ownedCard(card.id),price=cardPrice(card),level=owned?.level||1;button.innerHTML=`<span class="tag">${card.tag}</span><span class="price">◈ ${price}</span><span class="shop-art art-${card.t}"></span><b>${card.n}</b><small>${card.d(level)}</small><span class="owned">${owned?`已装备 ${'★'.repeat(owned.level)} · ${owned.copies}/3`:'新航标'}</span><em>${card.t+1}</em>`;button.className=`shop-card tier-${card.t}${game.coins<price?' locked':''}`;button.setAttribute('aria-label',`${card.n}，${card.d(level)}，价格 ${price} 航币`)});$('resultbuttons').parentElement?.classList.add('shop-mode');
+}
+function showCheckpoint(){const nextSegment=game.safeVisits+1,next=anomalyForSegment(nextSegment),unlock=game.lastUnlock?` · 解锁 ${game.lastUnlock}`:'';showOverlay('SAFE POINT / 安全站','见好就收？',game.score,`航段 ${game.segment} 完成：航币 +${game.lastCoinGain}，安全徽章 +1${unlock}。\n下一段：${next.name} · ${next.desc}`, [{text:`收手，带走 ${game.score} 分`,main:true,action:bank},{text:`进入牌店 · ${game.coins} 航币 →`,action:showUpgrades}],`徽章抵达即保存 · B 收手 · C 进入牌店`);}
+function continueRun(){if(game.phase!=='checkpoint')return;game.segment=game.safeVisits+1;game.anomaly=anomalyForSegment(game.segment);game.segmentPerfects=0;game.segmentRescued=false;game.missionProgress=0;game.shop=[];hideOverlay();game.phase='ready';message(game.anomaly.id==='calm'?'好，再来一跳。':`${game.anomaly.name} 开始。`,game.anomaly.desc);updateHud();canvas.focus({preventScroll:true});}
+function bank(){if(game.phase!=='checkpoint')return;game.phase='banked';const newRecord=game.score>best;best=Math.max(best,game.score);let saved=true;try{localStorage.setItem(CONFIG.storageKey,String(best));localStorage.setItem(CONFIG.medalStorageKey,String(medals))}catch{saved=false}$('best').textContent=best;rewardUi.medals.textContent=medals;rewardUi.title.textContent=badgeTitle(medals);renderHeroes();ping(523,.13);ping(659,.13,.12);ping(784,.18,.24);burst(game.ballX,baseY-60,'#e5fc72',45);showOverlay(newRecord?'NEW BEST / 新纪录':'NICELY DONE / 稳稳收下','这次，收得漂亮。',`+${game.score}`,`走过 ${game.step} 座平台，本局抵达 ${game.safeVisits} 个安全站；徽章已经沿途保存。`,[{text:'再来一局 ↗',main:true,action:reset}],saved?`R 立即重开 · ${badgeTitle(medals)} · 徽章已保存在本机`:'当前浏览器无法保存纪录；本次页面仍保留');updateHud();}
+function lose(){game.phase='lost';const lostScore=game.lostScore;game.score=0;const desc=game.step?`过了 ${game.step} 跳，${lostScore} 分没能带走。\n历史最高 ${best} 分，还在。`:'第一跳没站稳。\n按住约半秒，再松手试试。';renderHeroes();showOverlay('SO CLOSE / 差一点','再来一次？',0,desc,[{text:'再来一局 ↗',main:true,action:reset}],'R 立即重开 · 已抵达安全站的徽章不会丢');updateHud();}
 function pause(){if(['paused','banked','lost','checkpoint'].includes(game.phase))return;cancelCharge();pausedFrom=game.phase;game.phase='paused';showOverlay('PAUSED / 暂停','歇一下，也挺好。',game.score,'回来时，这一跳还在。',[{text:'继续游戏',main:true,action:resume}],'Esc 继续');updateHud();}
 function resume(){if(game.phase!=='paused')return;game.phase=pausedFrom||'ready';pausedFrom=null;hideOverlay();updateHud();canvas.focus({preventScroll:true});}
 for(const surface of [canvas,$('hold')]){
@@ -112,7 +180,7 @@ document.addEventListener('keydown',event=>{
   event.preventDefault();if(!event.repeat)startCharge('keyboard','space');
  }else if(event.code==='KeyR'&&['lost','banked'].includes(game.phase)){event.preventDefault();reset();canvas.focus({preventScroll:true})}
  else if(event.code==='KeyB'&&game.phase==='checkpoint'){event.preventDefault();bank()}
- else if(event.code==='KeyC'&&game.phase==='checkpoint'){event.preventDefault();continueRun()}
+ else if(event.code==='KeyC'&&game.phase==='checkpoint'){event.preventDefault();showUpgrades()}
  else if(event.code==='Escape'){event.preventDefault();game.phase==='paused'?resume():pause()}
 });
 document.addEventListener('keyup',event=>{if(event.code==='Space'&&input?.kind==='keyboard'){event.preventDefault();releaseCharge()}});
@@ -122,13 +190,13 @@ $('help').onclick=()=>{const showing=$('rules').classList.toggle('hidden')===fal
 function ellipse(x,y,rx,ry,color){ctx.fillStyle=color;ctx.beginPath();ctx.ellipse(x,y,Math.max(.1,rx),Math.max(.1,ry),0,0,Math.PI*2);ctx.fill()}
 function drawPlatform(p){
  const x=platformX(p,game.time)-game.camera;if(x< -p.width||x>W+p.width)return;
- const safe=checkpoint(p.index),current=p.index===game.step,next=p.index===game.step+1,w=p.width;
+ const safe=checkpoint(p.index),current=p.index===game.step,next=p.index===game.step+1,w=effectiveWidth(p);
  const body=safe?'#747d46':current?'#6157b3':'#454267',top=safe?'#d6ed7a':current?'#a092f4':'#7f77bf';
  ctx.globalAlpha=p.index>game.step+1?.45:1;
  ellipse(x,baseY+42,w*.55,10,'#0f1224');
  ctx.fillStyle=body;ctx.fillRect(x-w/2,baseY,w,24);ellipse(x,baseY+24,w/2,15,body);ellipse(x,baseY,w/2,15,top);
  ctx.strokeStyle=safe?'#edffa8':'#b4a9ff';ctx.lineWidth=1;ctx.beginPath();ctx.ellipse(x,baseY,w/2-.7,14.3,0,0,Math.PI*2);ctx.stroke();
- ellipse(x,baseY,Math.min(RULES.perfectRadius,w*.16),4.2,next?'#eaff99':'#c4b8ff');
+ ellipse(x,baseY,perfectRadiusFor(p),4.2,next?'#eaff99':'#c4b8ff');
  if(next){ctx.fillStyle=safe?'#e5fc72':'#bbb5df';ctx.font='12px "Microsoft YaHei",sans-serif';ctx.textAlign='center';ctx.fillText(safe?'安全站':p.moving?'移动平台':String(p.index).padStart(2,'0'),x,baseY+69);}
  ctx.globalAlpha=1;
 }
@@ -144,7 +212,7 @@ function render(dt){
   const targetX=platformX(next,game.time)-game.camera;
   ctx.strokeStyle='#e5fc7220';ctx.setLineDash([3,8]);ctx.beginPath();ctx.moveTo(game.ballX-game.camera,baseY-1);ctx.lineTo(targetX,baseY-1);ctx.stroke();ctx.setLineDash([]);
   if(game.phase==='charging'){
-   const end=game.ballX+distanceForPower(game.power),ok=Math.abs(end-platformX(next,game.time))<=next.width/2-4;
+   const drift=game.anomaly.id==='wind'?windDrift():0,end=game.ballX+distanceForPower(game.power)+drift,ok=Math.abs(end-platformX(next,game.time))<=effectiveWidth(next)/2-4;
    for(let i=1;i<=16;i++){const t=i/16;ellipse(game.ballX-game.camera+(end-game.ballX)*t,baseY-CONFIG.ballRadius-Math.sin(t*Math.PI)*115,2,2,ok?'#e5fc7290':'#c1b8ef80')}
    ellipse(end-game.camera,baseY,8,3,ok?'#e5fc72':'#d1bee0');
   }
@@ -175,5 +243,7 @@ function tick(now){
  if(game.phase!=='paused'){game.camera+=(game.ballX-W*.25-game.camera)*(1-Math.exp(-dt*7));game.squash=Math.max(0,game.squash-dt*5)}
  if(game.step<3&&game.phase==='ready')updateHud();render(dt);frame=requestAnimationFrame(tick);
 }
-resize();renderHeroes();reset();frame=requestAnimationFrame(tick);
+resize();renderHeroes();reset();
+if(typeof location!=='undefined'&&new URLSearchParams(location.search).get('preview')==='shop'){game.phase='checkpoint';game.safeVisits=3;game.segment=3;game.coins=26;game.score=360;showUpgrades();updateHud()}
+frame=requestAnimationFrame(tick);
 window.addEventListener('pagehide',()=>{cancelAnimationFrame(frame);audio?.close().catch(()=>{})},{once:true});
