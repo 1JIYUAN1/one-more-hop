@@ -2,6 +2,7 @@
 export const RULES={chargeMs:1100,minDistance:60,distanceRange:300,checkpointEvery:3,perfectRadius:12,ticketPerfects:2};
 export const checkpointAt=step=>{let total=0,stage=0;while(total<step){total+=3+stage;stage++}return total===step};
 export const nextCheckpoint=step=>{let total=0,stage=0;while(total<=step){total+=3+stage;stage++}return total};
+export const checkpointRange=step=>{let start=0,end=0,stage=0;while(end<=step){start=end;end+=3+stage;stage++}return {start,end,length:end-start,progress:step-start,stage}};
 export const distanceForPower=p=>RULES.minDistance+Math.max(0,Math.min(1,p))*RULES.distanceRange;
 export const powerForDistance=d=>Math.max(0,Math.min(1,(d-RULES.minDistance)/RULES.distanceRange));
 export function seededRandom(seed){let x=seed>>>0;return ()=>{x+=0x6D2B79F5;let t=Math.imul(x^x>>>15,1|x);t^=t+Math.imul(t^t>>>7,61|t);return ((t^t>>>14)>>>0)/4294967296}}
