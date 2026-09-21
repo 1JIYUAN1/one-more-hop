@@ -1,4 +1,4 @@
-import {RULES,distanceForPower,powerForDistance,seededRandom,nextPlatform,platformX,landingResult,checkpoint,nextCheckpoint,checkpointRange} from './game-core.mjs';
+import {RULES,distanceForPower,powerForDistance,seededRandom,nextPlatform,platformX,landingResult,checkpoint,nextCheckpoint,checkpointRange} from './game-core.mjs?v=20260921-1';
 
 // 参数区：浏览器存储键与游戏呈现参数集中定义。无外部请求、文件或密钥。
 const CONFIG={storageKey:'one-more-hop.best.v1',medalStorageKey:'one-more-hop.medals.v1',ballRadius:15,flightSeconds:.58,particleLimit:100};
